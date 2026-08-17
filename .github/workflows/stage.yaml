@@ -12,13 +12,27 @@ on:
       - '!.gitignore'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: [ubuntu-latest]
     environment: stage
     steps:
+      - name: Require BUILD_VERSION
+        run: |
+          if [ -z "${{ vars.BUILD_VERSION }}" ]; then
+            echo "::error::BUILD_VERSION is not set on the stage environment. Set it to the upstream release tag to build, e.g. v2.10.3"
+            exit 1
+          fi
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          ref: ${{ vars.BUILD_VERSION }}
+      - name: Resolve built commit
+        id: rev
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - name: Set up QEMU
         uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
       - name: Set up Docker Buildx
@@ -33,10 +47,49 @@ jobs:
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         with:
           push: true
-          tags: ${{ secrets.IMAGE_REGISTRY_URL }}/${{ secrets.IMAGE_REPO }}/${{ secrets.IMAGE_NAME }}:${{ github.sha }}-${{ github.run_number }}
+          tags: ${{ secrets.IMAGE_REGISTRY_URL }}/${{ secrets.IMAGE_REPO }}/${{ secrets.IMAGE_NAME }}:${{ vars.BUILD_VERSION }}-${{ github.run_number }}
           file: Dockerfile
           build-args: |
-            GIT_COMMIT_SHA=${{ github.sha }}
-            GIT_TAG=v2.10.3
+            GIT_COMMIT_SHA=${{ steps.rev.outputs.sha }}
+            GIT_TAG=${{ vars.BUILD_VERSION }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  update-gitops:
+    needs: build
+    runs-on: [ubuntu-latest]
+    environment: stage
+    steps:
+      - name: Checkout gitops repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          token: ${{ secrets.GITOPS_PAT }}
+          repository: ${{ secrets.GITOPS_REPO }}
+          ref: main
+      - name: Update image tag
+        env:
+          MANIFEST: ${{ secrets.MANIFEST_PATH }}
+          PARAM: ${{ vars.GITOPS_IMAGE_PARAM }}
+          TAG: ${{ vars.BUILD_VERSION }}-${{ github.run_number }}
+          COMMIT_EMAIL: ${{ secrets.IMAGE_REGISTRY_USER }}
+        run: |
+          set -euo pipefail
+          if ! grep -q -- "- name: ${PARAM}$" "$MANIFEST"; then
+            echo "::error::parameter ${PARAM} not found in ${MANIFEST}"
+            exit 1
+          fi
+          if grep -A1 -- "- name: ${PARAM}$" "$MANIFEST" | grep -q -- "value: ${TAG}$"; then
+            echo "${PARAM} is already ${TAG}, nothing to do"
+            exit 0
+          fi
+          sed -i "/- name: ${PARAM}\$/{n;s|value: .*|value: ${TAG}|;}" "$MANIFEST"
+          if ! grep -A1 -- "- name: ${PARAM}$" "$MANIFEST" | grep -q -- "value: ${TAG}$"; then
+            echo "::error::failed to apply ${TAG} to ${PARAM}"
+            exit 1
+          fi
+          git config user.name 'github-actions-bot'
+          git config user.email "$COMMIT_EMAIL"
+          git add "$MANIFEST"
+          git commit -m "blockscout: set ${PARAM} to ${TAG}"
+          git pull --rebase
+          git push
