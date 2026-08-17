@@ -54,3 +54,42 @@ jobs:
             GIT_TAG=${{ vars.BUILD_VERSION }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  update-gitops:
+    needs: build
+    runs-on: [ubuntu-latest]
+    environment: stage
+    steps:
+      - name: Checkout gitops repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          token: ${{ secrets.GITOPS_PAT }}
+          repository: ${{ secrets.GITOPS_REPO }}
+          ref: main
+      - name: Update image tag
+        env:
+          MANIFEST: ${{ secrets.MANIFEST_PATH }}
+          PARAM: ${{ vars.GITOPS_IMAGE_PARAM }}
+          TAG: ${{ vars.BUILD_VERSION }}-${{ github.run_number }}
+          COMMIT_EMAIL: ${{ secrets.IMAGE_REGISTRY_USER }}
+        run: |
+          set -euo pipefail
+          if ! grep -q -- "- name: ${PARAM}$" "$MANIFEST"; then
+            echo "::error::parameter ${PARAM} not found in ${MANIFEST}"
+            exit 1
+          fi
+          if grep -A1 -- "- name: ${PARAM}$" "$MANIFEST" | grep -q -- "value: ${TAG}$"; then
+            echo "${PARAM} is already ${TAG}, nothing to do"
+            exit 0
+          fi
+          sed -i "/- name: ${PARAM}\$/{n;s|value: .*|value: ${TAG}|;}" "$MANIFEST"
+          if ! grep -A1 -- "- name: ${PARAM}$" "$MANIFEST" | grep -q -- "value: ${TAG}$"; then
+            echo "::error::failed to apply ${TAG} to ${PARAM}"
+            exit 1
+          fi
+          git config user.name 'github-actions-bot'
+          git config user.email "$COMMIT_EMAIL"
+          git add "$MANIFEST"
+          git commit -m "blockscout: set ${PARAM} to ${TAG}"
+          git pull --rebase
+          git push
