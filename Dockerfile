@@ -103,6 +103,7 @@ RUN pnpm exec tsc -p ./tools/dev-server/tsconfig.json
 # Production image, copy all the files and run next
 FROM node:22.14.0-alpine AS runner
 RUN apk add --no-cache --upgrade bash curl jq unzip
+RUN npm i -g npm@11.19.1
 
 ### APP
 WORKDIR /app
