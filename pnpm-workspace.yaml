@@ -26,6 +26,9 @@ overrides:
   "@noble/hashes": "1.8.0"
   "vite-plugin-dts>brace-expansion": "2.0.2"
   protobufjs: "7.5.5"
+  handlebars: "4.7.10"
+  dompurify: "3.4.17"
+  shell-quote: "1.12.0"
 
 # pnpm 11+: allowlisted dependency install scripts (required for native addons).
 # Replaces pnpm 10's onlyBuiltDependencies — same policy: only these two packages may run build scripts.
